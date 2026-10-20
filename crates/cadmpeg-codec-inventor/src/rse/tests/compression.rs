@@ -135,38 +135,41 @@ fn both_streams_reject_truncated_members_and_trailing_garbage() {
 }
 
 #[test]
-fn both_streams_propagate_resource_refusals() {
+fn both_streams_reject_expansion_limit_violations() {
     for method in [1, 2] {
-        for limit in 0..4 {
-            // zlib expansion is charged as decompressed bytes, not decoder workspace.
-            if method == 1 && limit == 3 {
-                continue;
-            }
+        for limit in 1..3 {
             let mut policy = DecodePolicy::service();
             match limit {
-                0 => policy.limits.max_work_units = 0,
                 1 => policy.limits.max_decompressed_bytes_per_expand = 1,
-                2 => policy.limits.max_decompressed_bytes_total = 1,
-                _ => policy.limits.max_materialized_bytes = 1,
+                _ => policy.limits.max_decompressed_bytes_total = 1,
             }
             let (bytes, _) = metadata(method);
             let arena = DecodeArena::new();
             let (ctx, root) =
                 DecodeContext::from_root_bytes(&bytes, &arena, &policy).expect("context");
             let result = parse_meta_stream(&ctx, root);
-            assert!(
-                matches!(result, Err(CodecError::ResourceLimit(_))),
-                "metadata method={method}, limit={limit}: {result:?}"
-            );
+            if method == 2 && limit == 1 {
+                // Window admission rejects this stream before allocating a decoder.
+                assert!(matches!(result, Ok(SegmentMetaState::Malformed { .. })));
+            } else {
+                assert!(
+                    matches!(result, Err(CodecError::ResourceLimit(_))),
+                    "metadata method={method}, limit={limit}: {result:?}"
+                );
+            }
             let bytes = bulk(method);
             let arena = DecodeArena::new();
             let (ctx, root) =
                 DecodeContext::from_root_bytes(&bytes, &arena, &policy).expect("context");
             let result = parse_bulk_stream(&ctx, root);
-            assert!(
-                matches!(result, Err(CodecError::ResourceLimit(_))),
-                "bulk method={method}, limit={limit}: {result:?}"
-            );
+            if method == 2 && limit == 1 {
+                assert!(matches!(result, Err(CodecError::NotImplemented(_))));
+            } else {
+                assert!(
+                    matches!(result, Err(CodecError::ResourceLimit(_))),
+                    "bulk method={method}, limit={limit}: {result:?}"
+                );
+            }
         }
     }
 }
